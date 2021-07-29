@@ -5,6 +5,8 @@ class Error:
     Paused              = "Contract is paused please use the new contract"
     Null                = "You must buy at least 1 ticket"
     AccessDenied        = "You must be admin"
+    TicketsRemaining    = "Not all tickets are sold"
+
 
 
 def call(c, x):
@@ -18,9 +20,10 @@ class Lottery(sp.Contract):
             limit = sp.nat(500),
             tickets = sp.map(tkey = sp.TNat, tvalue = sp.TAddress),
             id = sp.nat(0),
-            previous_winners = sp.big_map(tkey = sp.TNat, tvalue = sp.TRecord(winner = sp.TAddress, ticket = sp.TNat)),
+            previous_winners = sp.big_map(tkey = sp.TNat, tvalue = sp.TRecord(winner = sp.TAddress, ticket = sp.TNat, users = sp.TNat)),
             price = sp.nat(1_000_000),
             winning_price = sp.nat(490_000_000),
+            user_map = sp.map(tkey = sp.TAddress, tvalue = sp.TList(sp.TNat)),
             round_num = sp.nat(1),
             admin = admin,
             paused = sp.bool(False),
@@ -39,25 +42,27 @@ class Lottery(sp.Contract):
         
         sp.for i in sp.range(0, params):
             self.data.tickets[self.data.id] = sp.sender
+            sp.if ~self.data.user_map.contains(sp.sender):
+                self.data.user_map[sp.sender] = sp.list([self.data.id])
+            sp.else:
+                self.data.user_map[sp.sender].push(self.data.id)
             self.data.id += 1
 
         price = params * self.data.price
         
         paramTrans = sp.TRecord(from_ = sp.TAddress, to_ = sp.TAddress, value = sp.TNat).layout(("from_ as from", ("to_ as to", "value")))
-        paramCall = sp.record(from_ = sp.sender, to_ = self.data.reserve, value = price)
+        paramCall = sp.record(from_=sp.sender, to_=self.data.reserve, value = price)
         call(sp.contract(paramTrans, self.data.FA12TokenContract, entry_point = "transfer").open_some(), paramCall)        
     
-    # The function will send the winning price to the winner
-    # The function takes as parameters:
-    # - the random number to pick the winner
     @sp.entry_point
     def selectWinner(self, params):
         sp.verify(sp.sender == self.data.admin, Error.AccessDenied)
+        sp.verify(self.data.id == self.data.limit, Error.TicketsRemaining)
         sp.set_type(params, sp.TNat)
 
         params = params % self.data.limit
         winner = self.data.tickets[params]
-        self.data.previous_winners[self.data.round_num] = sp.record(winner = winner, ticket = params)
+        self.data.previous_winners[self.data.round_num] = sp.record(winner = winner, ticket = params, users = sp.len(self.data.user_map))
         self.data.round_num += 1
 
         paramTrans = sp.TRecord(from_ = sp.TAddress, to_ = sp.TAddress, value = sp.TNat).layout(("from_ as from", ("to_ as to", "value")))
@@ -66,15 +71,12 @@ class Lottery(sp.Contract):
 
         self.resetLottery()
 
-    # The function will reset the lottery
-    # The function doesn't take any parameter
     def resetLottery(self):
         self.data.id = sp.nat(0)
         sp.for i in sp.range(0, self.data.limit):
+            del self.data.user_map[self.data.tickets[i]]
             del self.data.tickets[i]
 
-    # The function will pause the contract when the v2 will be available
-    # The function doesn't take any parameter
     @sp.entry_point
     def pause(self, params):
         sp.set_type(params, sp.TUnit)
